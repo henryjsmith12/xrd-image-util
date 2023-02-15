@@ -3,6 +3,7 @@ See LICENSE file.
 """
 
 import databroker
+import numpy as np
 from prettytable import PrettyTable
 import pyqtgraph as pg
 import xrayutilities as xu
@@ -19,7 +20,6 @@ class Catalog:
     bluesky_catalog = None # Bluesky dictionary-like catalog
     name = None # Local name for catalog
     scan_uid_dict = None # Dictionary of scans in catalog with UID as key
-    scan_id_dict = None # Dictionary of scans in catalog with scan ID as key
 
     def __init__(self, name) -> None:
 
@@ -31,77 +31,47 @@ class Catalog:
 
         # Creates a Scan object for every run in the catalog
         # Adds Scans to a dictionary
-        self.scan_uid_dict, self.scan_id_dict = {}, {}
-        for scan_uid in sorted(list(self.bluesky_catalog)):
+        self.scan_uid_dict = {}
+        for scan_uid in list(self.bluesky_catalog):
             scan = Scan(catalog=self, uid=scan_uid)
             self.scan_uid_dict.update({scan_uid: scan})
+
+    def _load_scans(self, uids: list):
+
+        for uid in uids:
             try:
-                self.scan_id_dict.update({scan.scan_id: scan})
+                self.scan_uid_dict[uid] = Scan(catalog=self, uid=uid)
             except:
                 pass
 
-        # Checks if all scan ID's are unique
-        # If not, then search by scan ID is not allowed in catalog
-        if len(self.scan_id_dict.keys()) != len(self.scan_uid_dict.keys()):
-            self.scan_id_dict = None
+    def search(self, proposal_id=None, user=None, sample=None, scan_id=None, plan_name=None):
+        """Simplified version of the databroker.catalog search function."""
 
-    def get_scan(self, scan_id: int):
-        """Returns scan from given numerical scan ID."""
+        query = {}
 
-        if type(scan_id) != int:
-            raise TypeError(f"Scan ID {scan_id} does not exist.")
-
-        # Checks if scan ID exists
-        if scan_id not in self.scan_id_dict:
-            raise KeyError(f"Scan ID {scan_id} does not exist.")
-
-        return self.scan_id_dict[scan_id]
-
-    def get_scans(self, scan_ids: list) -> list:
-        """Returns list of scans from given numerical scan ID's."""
-
-        if type(scan_ids) != list:
-            raise TypeError("Input needs to be a list.")
-
-        scan_list = []
-        for scan_id in scan_ids:
-            scan = self.get_scan(scan_id=scan_id)
-            scan_list.append(scan)
-
-        return scan_list
-    
-    def scan_count(self) -> int:
-        """Returns the number of scans in catalog."""
+        if proposal_id:
+            query.update({"proposal_id": proposal_id})
+        if user:
+            query.update({"user": user})
+        if sample:
+            query.update({"sample": sample})
+        if scan_id:
+            query.update({"scan_id": scan_id})
+        if plan_name:
+            query.update({"plan_name": plan_name})
         
-        return len(self.scan_uid_dict.keys())
-
-    def list_scans(self) -> None:
-        """Prints formatted string table listing scans in catalog."""
-
-        headers = [
-            "scan_id", "motors", 
-            "motor_start", "motor_stop", "n_pts",
-            "sample", "proposal_id", "user"
-        ]
-        table = PrettyTable(headers)
-
-        scan_uids = list(self.scan_uid_dict.keys())
-        scans = [self.scan_uid_dict[uid] for uid in scan_uids]
-
-        for scan in scans:
-            row = [
-                scan.scan_id, scan.motors, 
-                scan.motor_bounds[0], scan.motor_bounds[1], scan.point_count(), 
-                scan.sample, scan.proposal_id, scan.user
-            ]
-            table.add_row(row)
-
-        table.sortby = "scan_id"
-        print(table)
-
-    def view_line_data(self) -> None:
-        """Displays Scan line data in an interactive GUI."""
+        results = self.bluesky_catalog.search(query)
         
+        return list(results)
+
+    def get_scan(self, uid=None, scan_id=None):
+        ...
+ 
+    def view_line_data(self, uids: list) -> None:
+        """Displays Scan line data for a list of scans in an interactive GUI."""
+        
+        self.load_scans(uids=uids)
+
         self.app = pg.mkQApp()
         self.window = line_data_widget.CatalogLineDataWidget(catalog=self)
         self.window.raise_()
@@ -115,69 +85,80 @@ class Scan:
 
     catalog = None # Parent Catalog
     uid = None # UID for scan; given by bluesky
-    bluesky_run = None # Raw Bluesky run for scan
-    scan_id = None # Simple ID given to scan by user -- not always unique
-    sample = None # Experimental sample
-    proposal_id = None # Manually provided Proposal ID
-    user = None # Experimental user
-    motors = None # List of variable motors for scan
-    motor_bounds = None # The starting and ending values for each variable motor
-    h = None # List of H center values throughout scan
-    k = None # List of K center values throughout scan
-    l = None # List of L center values throughout scan
-    bluesky_1d_vars = None # List of 1D variables used in bluesky run
-    
-    rsm = None # Reciprocal space map for every point within a scan
-    rsm_bounds = None # Min/max HKL values for RSM
-    raw_data = None # 3D numpy array of scan data
-    gridded_data = None # Interpolated and transformed scan data
-    gridded_data_coords = None # HKL coordinates for gridded data
+    id = None
+
+    raw_data = None
+    rsm = None
+    gridded_data = None
+    gridded_data_coords = None
 
     def __init__(self, catalog: Catalog, uid: str) -> None:
 
         self.catalog = catalog
         self.uid = uid
-        self.bluesky_run = catalog.bluesky_catalog[uid]
-        self.scan_id = self.bluesky_run.metadata["start"]["scan_id"]
-        self.sample = self.bluesky_run.metadata["start"]["sample"]
-        self.proposal_id = self.bluesky_run.metadata["start"]["proposal_id"]
-        self.user = self.bluesky_run.metadata["start"]["user"]
-        self.motors = self.bluesky_run.metadata["start"]["motors"]
-        self.motor_bounds = utils._get_motor_bounds(self)
-        self.h, self.k, self.l = utils._get_hkl_centers(self)
-        self.bluesky_1d_vars = utils._get_bluesky_1d_variables(self)
+        self.scan_id = catalog.bluesky_catalog[uid].metadata["start"]["scan_id"]
+        if "primary" in catalog.bluesky_catalog[uid].keys():
+            omega_values = catalog.bluesky_catalog[uid].primary.read()["fourc_omega"].values
+            chi_values = catalog.bluesky_catalog[uid].primary.read()["fourc_chi"].values
+            phi_values = catalog.bluesky_catalog[uid].primary.read()["fourc_phi"].values
+            tth_values = catalog.bluesky_catalog[uid].primary.read()["fourc_tth"].values
 
-        # TODO: Figure out where to put these steps
-        self.rsm = utils._get_rsm_for_scan(self)
-        self.rsm_bounds = utils._get_rsm_bounds(self)
-        self.raw_data = utils._get_raw_data(self)
+    # Loading functions to help with initial Scan creation time
+    def _load_raw_image_data(self) -> None:
+        """Loads raw image data from bluesky catalog."""
 
-    def point_count(self) -> int:
-        """Returns number of points in scan."""
+        # Only loaded in once per scan
+        if not self.raw_data:
+            run = self.catalog.bluesky_catalog[self.uid]
 
-        if "primary" not in self.bluesky_run.keys():
-            return 0
-        else:
-            return self.bluesky_run.primary.metadata["dims"]["time"]
+            if "primary" not in run.keys():
+                return
+            
+            # Reads through keys to find detector image key
+            for key in list(run.primary.read().keys()):
+                key_np_array = run.primary.read()[key].values
+                if np.squeeze(key_np_array).ndim == 3:
+                    raw_data_4d = key_np_array
+                    raw_data_3d_unordered = np.squeeze(raw_data_4d)
+                    self.raw_data = np.swapaxes(raw_data_3d_unordered, 1, 2)
+                    break
+
+    def _load_rsm(self) -> None:
+        """Loads reciprocal space map from bluesky catalog values."""
+
+        if not self.rsm:
+            self.rsm = utils._get_rsm_for_scan(scan=self)
 
     def grid_data(
-        self,
-        h_count: int=250, k_count: int=250, l_count: int=250,
+        self, h_count: int=250, k_count: int=250, l_count: int=250,
         h_min: float=None, h_max: float=None, 
         k_min: float=None, k_max: float=None,
         l_min: float=None, l_max: float=None
     ) -> None:
-        """Constructs gridded 3D image from RSM coordinates."""
+        """Constructs gridded 3D image from RSM coordinates and raw image data."""
 
-        # Provided bounds for gridding
-        grid_bounds = [h_min, h_max, k_min, k_max, l_min, l_max]
+        self._load_raw_image_data()
+        self._load_rsm()
 
-        # Bounds in reciprocal space map, reshaped to a list
-        rsm_bounds = [self.rsm_bounds[b] for b in list(self.rsm_bounds.keys())]
-        
-        for i in range(len(grid_bounds)):
-            if grid_bounds[i] is None:
-                grid_bounds[i] = rsm_bounds[i]
+        if not self.raw_data:
+            raise ValueError("Raw image data not found.")
+        if not self.rsm:
+            raise ValueError("RSM not found.")
+
+        # Provided bounds
+        user_provided_bounds = [h_min, h_max, k_min, k_max, l_min, l_max]
+        # Bounds from RSM
+        rsm_bounds = utils._get_rsm_bounds(scan=self)
+
+        if h_min >= h_max or k_min >= k_max or l_min >= l_max:
+            raise ValueError("Invalid gridding bounds provided.")
+
+        grid_bounds = []
+        for u, r in zip(user_provided_bounds, rsm_bounds):
+            if u:
+                grid_bounds.append(u)
+            else:
+                grid_bounds.append(r)
 
         h_map = self.rsm[:, :, :, 0]
         k_map = self.rsm[:, :, :, 1]
@@ -190,12 +171,7 @@ class Scan:
             nz=l_count
         )
         gridder.KeepData(True)
-        gridder.dataRange(
-            xmin=grid_bounds[0], xmax=grid_bounds[1],
-            ymin=grid_bounds[2], ymax=grid_bounds[3],
-            zmin=grid_bounds[4], zmax=grid_bounds[5],
-            fixed=True
-        )
+        gridder.dataRange(*grid_bounds, fixed=True)
 
         # Grids raw data with bounds
         gridder(h_map, k_map, l_map, self.raw_data)
@@ -205,7 +181,12 @@ class Scan:
         self.gridded_data_coords = [gridder.xaxis, gridder.yaxis, gridder.zaxis]
 
     def view_image_data(self) -> None:
-        """Displays Scan image data in an interactive GUI."""
+        """Displays image data in an interactive GUI."""
+        
+        self._load_raw_image_data()
+
+        if not self.raw_data:
+            raise ValueError("Raw image data not found.")
         
         self.app = pg.mkQApp()
         self.window = image_data_widget.ScanImageDataWidget(scan=self)
@@ -213,3 +194,4 @@ class Scan:
         self.window.show()
         self.window.raise_()
         self.app.exec_()
+    
