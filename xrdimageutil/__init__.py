@@ -31,10 +31,8 @@ class Catalog:
 
         # Creates a Scan object for every run in the catalog
         # Adds Scans to a dictionary
-        self.scan_uid_dict = {
-            scan_uid: Scan(catalog=self, uid=scan_uid)
-            for scan_uid in list(self.bluesky_catalog)
-        }
+        self.scan_uid_dict = {}
+        self._load_scans(list(self.bluesky_catalog))
 
     def _load_scans(self, uids: list):
 
